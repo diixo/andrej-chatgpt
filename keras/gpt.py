@@ -27,13 +27,15 @@ n_layer = 4
 dropout_rate = 0.2
 
 class Head(layers.Layer):
+    """ one head of self-attention """
+
     def __init__(self, head_size, dropout_rate=0.2):
         super().__init__()
         self.head_size = head_size
         self.dropout_rate = dropout_rate
 
     def build(self, input_shape):
-        #assert(block_size == input_shape[1])
+        assert(block_size == input_shape[1])
 
         self.key   = layers.Dense(units=self.head_size, use_bias=False) # (n_embd, head_size)
         self.query = layers.Dense(units=self.head_size, use_bias=False) # (n_embd, head_size)
@@ -68,6 +70,8 @@ class Head(layers.Layer):
 
 
 class MultiHeadAttention(layers.Layer):
+    """ multiple heads of self-attention in parallel """
+
     def __init__(self, num_heads, head_size, n_embd, dropout_rate):
         super().__init__()
         self.num_heads = num_heads
@@ -89,6 +93,8 @@ class MultiHeadAttention(layers.Layer):
 
 
 class FeedForward(layers.Layer):
+    """ a simple linear layer followed by a non-linearity """
+
     def __init__(self, n_embd: int, dropout_rate: float):
         super().__init__()
         self.n_embd = n_embd
@@ -109,6 +115,8 @@ class FeedForward(layers.Layer):
 
 
 class Block(layers.Layer):
+    """ Transformer block: communication followed by computation """
+
     def __init__(self, n_embd: int, n_head: int, dropout_rate: float=0.2):
         assert n_embd % n_head == 0
         super().__init__()
@@ -146,7 +154,7 @@ class BigramLanguageLayer(layers.Layer):
         self.n_block = n_block
 
     def build(self, input_shape):
-        #assert(block_size == input_shape[1])
+        assert(block_size == input_shape[1])
         self.block_size = input_shape[1]
 
         # each token directly reads off the logits for the next token from a lookup table
@@ -206,7 +214,7 @@ class TransformerModel:
         out = dict()
         for split in ["train", "val"]:
             loss = np.mean([self.model.evaluate(*data.fetch_batch(split), verbose=0)
-                           for _ in range(num_iters)])
+                        for _ in range(num_iters)])
             out[split] = loss
             print(f'{split} loss {loss:.4f}')
         return out
@@ -225,7 +233,6 @@ class TransformerModel:
             idx.append(idx_next)
             res.append(idx_next)
             print(decoder([idx_next]), end='')
-
         return res
 
 
@@ -233,22 +240,32 @@ class TransformerModel:
         return self.model.train_on_batch(x, y, *args, **kwargs)
 
 
-# ---------- train ----------
+def train_model(data: Data):
+    """ return TransformerModel """
+
+    model = TransformerModel(data.vocab_size, n_embd, n_head, n_layer, block_size, dropout_rate, learning_rate)
+
+    for iter in range(max_iters):
+
+        xb, yb = data.fetch_batch("train")
+        loss = model.train_on_batch(xb, yb)
+
+        # every once in a while evaluate the loss on train and val sets
+        if iter % eval_interval == 0:
+            loss = model.estimate_loss(eval_iters)
+            print(f'Step {iter}', loss)
+        print(f"...on iter={iter}(th) epoch...")
+
+
+    # final estimation:
+    losses = model.estimate_loss()
+    print(f"Final step {iter.numpy()}: train_loss={losses['train']:.4f}, val_loss={losses['val']:.4f}")
+    return model
+
+
+# Generate text from the model
 data = Data(block_size, batch_size)
-transformer = TransformerModel(data.vocab_size, n_embd, n_head, n_layer, block_size, dropout_rate, learning_rate)
+model = train_model(data)
 
-for i in range(max_iters):
-
-    # every once in a while evaluate the loss on train and val sets
-    if i % eval_interval == 0 or i == max_iters - 1:
-        loss = transformer.estimate_loss(eval_iters)
-        print(f'Step {i}', loss)
-    print(f"...iter={i} >>")
-
-    xb, yb = data.fetch_batch(Data.TRAIN_SPLIT)
-    #print(xb.shape, yb.shape)
-    loss = transformer.train_on_batch(xb, yb)
-
-    # every once in a while evaluate the loss on train and val sets
-
-open('./more.txt', 'w').write(data.decoder(transformer.generate_text(500, data.decoder)))
+generated_text = data.decoder(model.generate_text(500, data.decoder))
+print(generated_text)
