@@ -6,7 +6,6 @@ import math
 import numpy as np
 import tensorflow as tf
 from scipy.special import softmax
-from tensorflow import keras
 from typing import Callable, List
 
 from tensorflow import keras
@@ -14,6 +13,18 @@ from keras import layers
 
 from data import Data
 
+# ---------- hyperparameters ----------
+batch_size = 32 # amount independent sequences will we process in parallel
+block_size = 80 # maximum context length for predictions
+
+max_iters = 5000
+eval_interval = 100
+eval_iters = 200
+learning_rate = 3e-4
+n_embd = 256
+n_head = 4
+n_layer = 4
+dropout_rate = 0.2
 
 class Head(layers.Layer):
     def __init__(self, head_size, dropout_rate=0.2):
@@ -24,30 +35,33 @@ class Head(layers.Layer):
     def build(self, input_shape):
         #assert(block_size == input_shape[1])
 
-        self.key = layers.Dense(self.head_size, activation=None, use_bias=False)
-        self.query = layers.Dense(self.head_size, activation=None, use_bias=False)
-        self.value = layers.Dense(self.head_size, activation=None, use_bias=False)
+        self.key   = layers.Dense(units=self.head_size, use_bias=False) # (n_embd, head_size)
+        self.query = layers.Dense(units=self.head_size, use_bias=False) # (n_embd, head_size)
+        self.value = layers.Dense(units=self.head_size, use_bias=False) # (n_embd, head_size)
+
+        tril = np.tril(np.ones((input_shape[1], input_shape[1])))
+        self.tril = tf.constant(tril)
         self.dropout = layers.Dropout(self.dropout_rate)
-        self.tril = tf.constant(np.tril(np.ones((input_shape[1], input_shape[1]))))
 
 
     def call(self, x, training=False):
         # input of size (batch, time-step, channels)
         # output of size (batch, time-step, head_size)
         B, T, C = x.shape
-        k = self.key(x)     # (B,T,C)
-        q = self.query(x)   # (B,T,C)
+        k = self.key(x)                         # (B, T, head_size)
+        q = self.query(x)                       # (B, T, head_size)
+        k_T = tf.transpose(k, perm=[0, 2, 1])   # (B, T, head_size) --> (B, head_size, T)
 
         # compute attention scores ("affinities")
         scale = tf.math.rsqrt(tf.cast(k.shape[-1], tf.float32))
-        k_T = tf.transpose(k, perm=[0, 2, 1])   # B, C, T
+
         wei = tf.matmul(q, k_T) * scale  # B, T, T
         wei = layers.Softmax(axis=-1)(wei, self.tril)   # softmax while making the upper-triangle all 0
         wei = self.dropout(wei, training=training)
 
         # perform the weighted aggregation of the values
-        v = self.value(x)   # B, T, C
-        out = tf.matmul(wei, v)      # (B, T, T) @ (B, T, C) -> (B, T, C)
+        v = self.value(x)                       # (B, T, head_size)
+        out = tf.matmul(wei, v)                 # (B, T, T) @ (B, T, head_size) --> (B, T, head_size)
 
         assert out.shape[1] == x.shape[1] and out.shape[2] == self.head_size
         return out
@@ -77,7 +91,6 @@ class MultiHeadAttention(layers.Layer):
 class FeedForward(layers.Layer):
     def __init__(self, n_embd: int, dropout_rate: float):
         super().__init__()
-
         self.n_embd = n_embd
         self.dropout_rate = dropout_rate
 
@@ -96,7 +109,7 @@ class FeedForward(layers.Layer):
 
 
 class Block(layers.Layer):
-    def __init__(self, n_embd: int, n_head: int, dropout_rate: float = 0.2):
+    def __init__(self, n_embd: int, n_head: int, dropout_rate: float=0.2):
         assert n_embd % n_head == 0
         super().__init__()
 
@@ -121,8 +134,9 @@ class Block(layers.Layer):
         return x
 
 
-class TransformerLayer(layers.Layer):
-    def __init__(self, vocab_size, n_embd, n_head, n_block, dropout_rate):
+class BigramLanguageLayer(layers.Layer):
+
+    def __init__(self, vocab_size, n_embd, n_head, n_block, dropout_rate=0.2):
         super().__init__()
 
         self.vocab_size = vocab_size
@@ -166,24 +180,27 @@ class TransformerLayer(layers.Layer):
 
 
 class TransformerModel:
-    def __init__(self, vocab_size, n_embd, n_head, n_layer, block_size, dropout_rate, learning_rate, random_seed=1116):
+    def __init__(self, vocab_size, n_embd, n_head, n_layer, block_size, dropout_rate, learning_rate, random_seed=2081):
         self.block_size = block_size
         self.vocab_size = vocab_size
 
         keras.utils.set_random_seed(random_seed)
-        inputs = keras.Input((block_size,))
-        transformer = TransformerLayer(vocab_size, n_embd, n_head, n_layer, dropout_rate)
-        outputs = transformer(inputs)
+        inputs = keras.Input((block_size,), dtype="int32")
+        outputs = BigramLanguageLayer(vocab_size, n_embd, n_head, n_layer, dropout_rate)(inputs)
         self.model = keras.Model(inputs, outputs)
 
         # for var in self.model.trainable_variables:
         #     print(f"--- {var.name}: {var.shape}")
 
         # keras.optimizers.experimental.AdamW behaves strangely. Using Adam instead for now.
-        self.model.compile(optimizer=keras.optimizers.Adam(learning_rate),
-                           loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True))
-        
+        self.model.compile(
+            optimizer=tf.optimizers.AdamW(
+                learning_rate=learning_rate,
+                weight_decay=1e-2,
+                epsilon=1e-7),
+            loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True))
         self.model.summary()
+
 
     def estimate_loss(self, num_iters: int, data: Data) -> dict:
         res = dict()
@@ -193,6 +210,7 @@ class TransformerModel:
             res[split] = loss
             print(f'{split} loss {loss:.4f}')
         return res
+
 
     def generate_text(self, max_new_tokens: int, decoder: Callable) -> List[int]:
         res = []
@@ -210,21 +228,10 @@ class TransformerModel:
 
         return res
 
+
     def train_on_batch(self, x, y, *args, **kwargs):
         return self.model.train_on_batch(x, y, *args, **kwargs)
 
-
-# ---------- hyperparameters ----------
-batch_size = 32 # how many independent sequences will we process in parallel?
-block_size = 80 # what is the maximum context length for predictions?
-max_iters = 5000
-eval_interval = 100
-eval_iters = 200
-learning_rate = 3e-4
-n_embd = 256
-n_head = 4
-n_layer = 4
-dropout_rate = 0.2
 
 # ---------- train ----------
 data = Data(block_size, batch_size)
