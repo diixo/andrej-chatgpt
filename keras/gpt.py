@@ -7,8 +7,6 @@ import numpy as np
 import tensorflow as tf
 from scipy.special import softmax
 from tensorflow import keras
-from tensorflow.keras import layers
-from tensorflow.keras import backend as K
 from typing import Callable, List
 
 from tensorflow import keras
@@ -59,15 +57,14 @@ class MultiHeadAttention(layers.Layer):
 
     def build(self, input_shape):
         self.heads = [Head(self.head_size, self.dropout_rate) for _ in range(self.num_heads)]
-        self.proj = layers.Dense(self.n_embd, activation=None)
+        self.proj = layers.Dense(units=self.n_embd)  # (head_size * num_heads, n_embd)
         self.dropout = layers.Dropout(self.dropout_rate)
 
-    def call(self, x, *args, **kwargs):
-        out = layers.Concatenate(axis=-1)([h(x) for h in self.heads])
-        out = self.dropout(self.proj(out))
+    def call(self, x, training=False):
+        out = tf.concat([h(x) for h in self.heads], axis=-1)
+        out = self.dropout(self.proj(out), training=training)
 
         assert out.shape[1] == x.shape[1] and out.shape[2] == self.n_embd
-
         return out
 
 
@@ -79,21 +76,21 @@ class FeedForward(layers.Layer):
         self.dropout_rate = dropout_rate
 
     def build(self, input_shape):
-        self.net = keras.Sequential([
-            layers.Conv1D(filters=4, kernel_size=1, activation='relu'),
-            layers.Conv1D(filters=self.n_embd, kernel_size=1),
-            layers.Dropout(self.dropout_rate)
+        self.net = tf.keras.Sequential([
+            layers.Dense(units=4*self.n_embd),  # (n_embd, 4*n_embd)
+            layers.ReLU(),
+            layers.Dropout(self.dropout_rate),
+            layers.Dense(units=self.n_embd),    # (4*n_embd, n_embd)
         ])
 
-    def call(self, x, *args, **kwargs):
-        out = self.net(x)   # B, T, n_embd
+    def call(self, x, training=False):
+        out = self.net(x, training=training)   # B, T, n_embd
         assert out.shape[1] == x.shape[1] and out.shape[2] == self.n_embd
-
         return out
 
 
 class Block(layers.Layer):
-    def __init__(self, n_embd: int, n_head: int, dropout_rate: float):
+    def __init__(self, n_embd: int, n_head: int, dropout_rate: float = 0.2):
         assert n_embd % n_head == 0
         super().__init__()
 
