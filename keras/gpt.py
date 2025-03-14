@@ -22,13 +22,15 @@ class Head(layers.Layer):
         self.dropout_rate = dropout_rate
 
     def build(self, input_shape):
+        #assert(block_size == input_shape[1])
+
         self.key = layers.Dense(self.head_size, activation=None, use_bias=False)
         self.query = layers.Dense(self.head_size, activation=None, use_bias=False)
         self.value = layers.Dense(self.head_size, activation=None, use_bias=False)
         self.dropout = layers.Dropout(self.dropout_rate)
-        self.mask = tf.constant(np.tril(np.ones((input_shape[1], input_shape[1]))))
+        self.tril = tf.constant(np.tril(np.ones((input_shape[1], input_shape[1]))))
 
-    def call(self, x, *args, **kwargs):
+    def call(self, x, training=False):
         k = self.key(x)     # (B,T,C)
         q = self.query(x)   # (B,T,C)
 
@@ -36,16 +38,16 @@ class Head(layers.Layer):
         scale = tf.math.rsqrt(tf.cast(k.shape[-1], tf.float32))
         k_T = tf.transpose(k, perm=[0, 2, 1])   # B, C, T
         wei = tf.matmul(q, k_T) * scale  # B, T, T
-        wei = layers.Softmax(axis=-1)(wei, self.mask)   # softmax while making the upper-triangle all 0
-        wei = self.dropout(wei)
+        wei = layers.Softmax(axis=-1)(wei, self.tril)   # softmax while making the upper-triangle all 0
+        wei = self.dropout(wei, training=training)
 
         # perform the weighted aggregation of the values
         v = self.value(x)   # B, T, C
         out = tf.matmul(wei, v)      # (B, T, T) @ (B, T, C) -> (B, T, C)
 
         assert out.shape[1] == x.shape[1] and out.shape[2] == self.head_size
-
         return out
+
 
 class MultiHeadAttention(layers.Layer):
     def __init__(self, num_heads, head_size, n_embd, dropout_rate):
