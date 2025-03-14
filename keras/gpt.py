@@ -96,20 +96,24 @@ class Block(layers.Layer):
         assert n_embd % n_head == 0
         super().__init__()
 
-        self.n_embd = n_embd
-        self.n_head = n_head
         self.head_size = n_embd // n_head
+        self.n_head = n_head
+        self.n_embd = n_embd
         self.dropout_rate = dropout_rate
 
     def build(self, input_shape):
         self.sa = MultiHeadAttention(self.n_head, self.head_size, self.n_embd, self.dropout_rate)
         self.ffwd = FeedForward(self.n_embd, self.dropout_rate)
-        self.ln1 = layers.LayerNormalization(epsilon=1e-5)
-        self.ln2 = layers.LayerNormalization(epsilon=1e-5)
+        self.ln1 = layers.LayerNormalization(epsilon=1e-6)
+        self.ln2 = layers.LayerNormalization(epsilon=1e-6)
 
-    def call(self, x, *args, **kwargs):
-        x = x + self.sa(self.ln1(x))
-        x = x + self.ffwd(self.ln2(x))
+        self.dropout_sa = layers.Dropout(self.dropout_rate)
+        self.dropout_ffn = layers.Dropout(self.dropout_rate)
+
+    def call(self, x, training=False):
+        # Pre-LN: normalization before MHA
+        x = x + self.dropout_sa(self.sa(self.ln1(x)), training=training)     # dropout output only MHA
+        x = x + self.dropout_ffn(self.ffwd(self.ln2(x)), training=training)  # dropout output only FFN
         return x
 
 
