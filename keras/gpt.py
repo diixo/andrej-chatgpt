@@ -170,13 +170,13 @@ class BigramLanguageLayer(layers.Layer):
         logits = self.lm_head(x)            # (B, T, vocab_sz)
 
         if targets is None:
-            loss = None
+            return logits
         else:
             B, T, C = logits.shape
             logits = tf.reshape(logits, (B * T, C))
             targets = tf.reshape(targets, (B * T,))
             loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=targets, logits=logits))
-        return logits#, loss
+            return logits, loss
 
 
 class TransformerModel:
@@ -202,14 +202,14 @@ class TransformerModel:
         self.model.summary()
 
 
-    def estimate_loss(self, num_iters: int, data: Data) -> dict:
-        res = dict()
-        for split in [data.TRAIN_SPLIT, data.VAL_SPLIT]:
+    def estimate_loss(self, num_iters: int) -> dict:
+        out = dict()
+        for split in ["train", "val"]:
             loss = np.mean([self.model.evaluate(*data.fetch_batch(split), verbose=0)
                            for _ in range(num_iters)])
-            res[split] = loss
+            out[split] = loss
             print(f'{split} loss {loss:.4f}')
-        return res
+        return out
 
 
     def generate_text(self, max_new_tokens: int, decoder: Callable) -> List[int]:
@@ -241,7 +241,7 @@ for i in range(max_iters):
 
     # every once in a while evaluate the loss on train and val sets
     if i % eval_interval == 0 or i == max_iters - 1:
-        loss = transformer.estimate_loss(eval_iters, data)
+        loss = transformer.estimate_loss(eval_iters)
         print(f'Step {i}', loss)
     print(f"...iter={i} >>")
 
