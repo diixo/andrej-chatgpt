@@ -16,7 +16,7 @@ from data import Data
 
 
 class Head(layers.Layer):
-    def __init__(self, head_size, dropout_rate):
+    def __init__(self, head_size, dropout_rate=0.2):
         super().__init__()
         self.head_size = head_size
         self.dropout_rate = dropout_rate
@@ -30,7 +30,11 @@ class Head(layers.Layer):
         self.dropout = layers.Dropout(self.dropout_rate)
         self.tril = tf.constant(np.tril(np.ones((input_shape[1], input_shape[1]))))
 
+
     def call(self, x, training=False):
+        # input of size (batch, time-step, channels)
+        # output of size (batch, time-step, head_size)
+        B, T, C = x.shape
         k = self.key(x)     # (B,T,C)
         q = self.query(x)   # (B,T,C)
 
@@ -128,26 +132,37 @@ class TransformerLayer(layers.Layer):
         self.n_block = n_block
 
     def build(self, input_shape):
+        #assert(block_size == input_shape[1])
         self.block_size = input_shape[1]
 
-        self.token_embedding_table = layers.Embedding(self.vocab_size, self.n_embd)
+        # each token directly reads off the logits for the next token from a lookup table
+        self.token_embedding_table    = layers.Embedding(self.vocab_size, self.n_embd)
         self.position_embedding_table = layers.Embedding(self.block_size, self.n_embd)
         self.blocks = keras.Sequential([Block(self.n_embd, self.n_head, self.dropout_rate) for _ in range(self.n_block)])
-        self.ln_f = layers.LayerNormalization(epsilon=1e-5)
-        self.lm_head = layers.Dense(self.vocab_size, activation=None)
+        self.ln_f = layers.LayerNormalization(epsilon=1e-6) # final layer norm
+        self.lm_head = layers.Dense(units=self.vocab_size)  # (n_embd, vocab_size)
 
 
-    def call(self, idx, *args, **kwargs):
-        # idx is of shape (B, T, C)
+    def call(self, idx, targets=None):
+        B, T = idx.shape
+        assert(self.block_size == T)
 
-        tok_emb = self.token_embedding_table(idx) # (B,T,C)
-        pos_emb = self.position_embedding_table(tf.range(0, self.block_size)) # (T,C)
-        x = tok_emb + pos_emb # (B,T,C)
-        x = self.blocks(x) # (B,T,C)
-        x = self.ln_f(x) # (B,T,C)
-        logits = self.lm_head(x) # (B,T,vocab_size)
+        # idx and targets are both (B=batch, T=time) tensor of integers
+        tok_emb = self.token_embedding_table(idx)               # (B, T, C=n_embd)
+        pos_emb = self.position_embedding_table(tf.range(0, T)) # (T, C=n_embd)
+        x = tok_emb + pos_emb               # (B, T, C)
+        x = self.blocks(x)                  # (B, T, C)
+        x = self.ln_f(x)                    # (B, T, C)
+        logits = self.lm_head(x)            # (B, T, vocab_sz)
 
-        return logits
+        if targets is None:
+            loss = None
+        else:
+            B, T, C = logits.shape
+            logits = tf.reshape(logits, (B * T, C))
+            targets = tf.reshape(targets, (B * T,))
+            loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=targets, logits=logits))
+        return logits#, loss
 
 
 class TransformerModel:
